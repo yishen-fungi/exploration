@@ -65,6 +65,16 @@ class ScanConfig:
     ratio_threshold: float
     keywords: tuple[str, ...]
     include_all_markets: bool
+    max_retries: int
+    retry_base_seconds: float
+    retry_max_seconds: float
+
+
+class KalshiAPIError(RuntimeError):
+    def __init__(self, message: str, *, status_code: int | None = None, retryable: bool = False) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.retryable = retryable
 
 
 def request_json(
@@ -73,19 +83,46 @@ def request_json(
     *,
     base_url: str = KALSHI_BASE_URL,
     timeout: int = 20,
+    max_retries: int = 5,
+    retry_base_seconds: float = 1.0,
+    retry_max_seconds: float = 30.0,
 ) -> dict[str, Any]:
     params = {key: value for key, value in (params or {}).items() if value is not None}
     query = f"?{urlencode(params)}" if params else ""
     request = Request(f"{base_url}{path}{query}", headers={"Accept": "application/json"})
 
-    try:
-        with urlopen(request, timeout=timeout) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"Kalshi API returned HTTP {exc.code}: {body}") from exc
-    except URLError as exc:
-        raise RuntimeError(f"Could not reach Kalshi API: {exc.reason}") from exc
+    for attempt in range(max_retries + 1):
+        try:
+            with urlopen(request, timeout=timeout) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            retryable = exc.code == 429 or 500 <= exc.code < 600
+            if retryable and attempt < max_retries:
+                sleep_seconds = min(retry_base_seconds * (2**attempt), retry_max_seconds)
+                print(
+                    f"Kalshi API returned HTTP {exc.code}; retrying in {sleep_seconds:.1f}s...",
+                    file=sys.stderr,
+                )
+                time.sleep(sleep_seconds)
+                continue
+            raise KalshiAPIError(
+                f"Kalshi API returned HTTP {exc.code}: {body}",
+                status_code=exc.code,
+                retryable=retryable,
+            ) from exc
+        except URLError as exc:
+            if attempt < max_retries:
+                sleep_seconds = min(retry_base_seconds * (2**attempt), retry_max_seconds)
+                print(
+                    f"Could not reach Kalshi API ({exc.reason}); retrying in {sleep_seconds:.1f}s...",
+                    file=sys.stderr,
+                )
+                time.sleep(sleep_seconds)
+                continue
+            raise KalshiAPIError(f"Could not reach Kalshi API: {exc.reason}", retryable=True) from exc
+
+    raise KalshiAPIError("Kalshi API request failed after retries.", retryable=True)
 
 
 def paginate(
@@ -94,10 +131,17 @@ def paginate(
     params: dict[str, Any],
     *,
     max_pages: int,
+    config: ScanConfig,
 ) -> Iterable[dict[str, Any]]:
     cursor = None
     for _ in range(max_pages):
-        page = request_json(path, params | {"cursor": cursor} if cursor else params)
+        page = request_json(
+            path,
+            params | {"cursor": cursor} if cursor else params,
+            max_retries=config.max_retries,
+            retry_base_seconds=config.retry_base_seconds,
+            retry_max_seconds=config.retry_max_seconds,
+        )
         yield from page.get(collection_key, [])
 
         cursor = page.get("cursor")
@@ -153,6 +197,7 @@ def fetch_candidate_markets(config: ScanConfig) -> list[dict[str, Any]]:
                 "mve_filter": "exclude",
             },
             max_pages=config.max_pages,
+            config=config,
         )
     )
 
@@ -181,6 +226,7 @@ def fetch_trades(ticker: str, config: ScanConfig) -> list[dict[str, Any]]:
                 "max_ts": unix_ts(now),
             },
             max_pages=config.max_pages,
+            config=config,
         )
     )
 
@@ -324,6 +370,20 @@ def write_jsonl(rows: list[dict[str, Any]], output: Path | None) -> None:
     print(f"\nWrote {len(rows)} flagged rows to {output}")
 
 
+def print_skipped_summary(skipped_markets: list[dict[str, str]]) -> None:
+    if not skipped_markets:
+        return
+
+    print(f"\nSkipped {len(skipped_markets)} markets after retry failures.", file=sys.stderr)
+    for skipped in skipped_markets[:10]:
+        print(
+            f"  {skipped['ticker']}: {skipped['reason']}",
+            file=sys.stderr,
+        )
+    if len(skipped_markets) > 10:
+        print(f"  ...and {len(skipped_markets) - 10} more", file=sys.stderr)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
@@ -340,6 +400,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--z-threshold", type=float, default=3.0)
     parser.add_argument("--ratio-threshold", type=float, default=5.0)
     parser.add_argument("--limit", type=int, default=25)
+    parser.add_argument("--max-retries", type=int, default=5)
+    parser.add_argument("--retry-base-seconds", type=float, default=1.0)
+    parser.add_argument("--retry-max-seconds", type=float, default=30.0)
     parser.add_argument("--include-all-markets", action="store_true")
     parser.add_argument(
         "--keyword",
@@ -364,25 +427,38 @@ def main() -> int:
         ratio_threshold=args.ratio_threshold,
         keywords=tuple(sorted(set(DEFAULT_DECISION_KEYWORDS + tuple(args.keyword)))),
         include_all_markets=args.include_all_markets,
+        max_retries=args.max_retries,
+        retry_base_seconds=args.retry_base_seconds,
+        retry_max_seconds=args.retry_max_seconds,
     )
 
     try:
         markets = fetch_candidate_markets(config)
-        rows = []
-        for index, market in enumerate(markets, start=1):
-            print(f"\rAnalyzing {index}/{len(markets)} markets...", end="", file=sys.stderr)
-            trades = fetch_trades(str(market["ticker"]), config)
-            if row := analyze_market(market, trades, config):
-                rows.append(row)
-            time.sleep(0.1)
-        print("\r", end="", file=sys.stderr)
-    except RuntimeError as exc:
+    except KalshiAPIError as exc:
         print(exc, file=sys.stderr)
         return 1
+
+    rows = []
+    skipped_markets = []
+    for index, market in enumerate(markets, start=1):
+        ticker = str(market["ticker"])
+        print(f"\rAnalyzing {index}/{len(markets)} markets...", end="", file=sys.stderr)
+        try:
+            trades = fetch_trades(str(market["ticker"]), config)
+        except KalshiAPIError as exc:
+            skipped_markets.append({"ticker": ticker, "reason": str(exc)})
+            print(f"\nSkipping {ticker} after retry failure: {exc}", file=sys.stderr)
+            continue
+
+        if row := analyze_market(market, trades, config):
+            rows.append(row)
+        time.sleep(0.1)
+    print("\r", end="", file=sys.stderr)
 
     rows.sort(key=lambda row: row["score"], reverse=True)
     print_table(rows, args.limit)
     write_jsonl(rows, args.jsonl)
+    print_skipped_summary(skipped_markets)
     return 0
 
 

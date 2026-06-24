@@ -54,9 +54,9 @@ Use stricter anomaly thresholds:
 python3 main.py --ratio-threshold 10 --z-threshold 4
 ```
 
-## ExampleL: Check The Past 1 Hour versus 24 Hours
+## Example: Check The Past 1 Hour Versus 24 Hours
 
-To scan for unusual trades in only the past hour:
+To compare the past hour against a 24-hour baseline:
 
 ```bash
 python3 main.py --lookback-hours 24 --recent-hours 1 --include-all-markets
@@ -99,13 +99,41 @@ python3 main.py \
 
 Useful options:
 
-- `--lookback-hours 24`: analyze trades from the past hour only
+- `--lookback-hours 24`: build the baseline from trades in the past 24 hours
 - `--recent-hours 1`: treat the past hour as the "recent activity" window
 - `--close-within-hours 24`: only scan open markets closing in the next 24 hours
 - `--include-all-markets`: scan every near-closing market instead of only keyword-matched decision-maker markets
 - `--min-trades 3`: include low-activity markets with at least 3 trades
 - `--ratio-threshold 3`: flag markets where the largest trade is at least 3x the average trade size
 - `--z-threshold 2`: flag statistically large trades with a lower exploratory bar
+
+## Rate Limits And Retries
+
+Kalshi may return `429 Too Many Requests` if the scan makes requests faster than the API rate limit allows. The scanner now handles that more gracefully:
+
+- retry `429` and temporary `5xx` errors with exponential backoff
+- retry temporary network failures
+- skip only the market whose trade fetch still fails after retries
+- keep analyzing later markets
+- print a skipped-market summary at the end
+
+Default retry settings:
+
+```bash
+python3 main.py --max-retries 5 --retry-base-seconds 1 --retry-max-seconds 30
+```
+
+For larger scans, either reduce the scan size or make the retry behavior more patient:
+
+```bash
+python3 main.py \
+  --include-all-markets \
+  --max-markets 500 \
+  --max-pages 10 \
+  --max-retries 8 \
+  --retry-base-seconds 2 \
+  --retry-max-seconds 60
+```
 
 ## Interpreting Columns
 
