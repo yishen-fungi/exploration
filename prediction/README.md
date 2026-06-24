@@ -156,6 +156,13 @@ Each JSONL row includes fields such as:
 - `trade_count` for markets where trades were fetched
 - `flagged`: whether the market appeared in the anomaly output
 
+Seeing weather or temperature markets in this file does not necessarily mean they were analyzed. Check `scan_status`:
+
+- `filtered_out`: the market was fetched from Kalshi but excluded before trade analysis
+- `analyzed_not_flagged` or `analyzed_flagged`: the market passed filters and trades were analyzed
+
+The `--exclude-natural-events` list includes weather terms such as `weather`, `rain`, `precipitation`, `temperature`, `temp`, `high temp`, `low temp`, `degrees`, `hurricane`, `earthquake`, and `wildfire`.
+
 ## Rate Limits And Retries
 
 Kalshi may return `429 Too Many Requests` if the scan makes requests faster than the API rate limit allows. The scanner now handles that more gracefully:
