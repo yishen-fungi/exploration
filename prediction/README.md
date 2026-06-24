@@ -103,8 +103,7 @@ python3 main.py \
   --ratio-threshold 3 \
   --z-threshold 2 \
   --jsonl data/kalshi_unusual_last_1h.jsonl \
-  --checked-markets-jsonl data/kalshi_checked_last_1h.jsonl \
-  --checked-markets-jsonl data/checked_markets.jsonl
+  --checked-markets-jsonl data/kalshi_checked_last_1h.jsonl
 ```
 
 Save the full flagged rows:
@@ -151,6 +150,10 @@ Each JSONL row includes fields such as:
 
 - `scan_status`: `filtered_out`, `not_analyzed_max_markets_limit`, `analyzed_not_flagged`, `analyzed_flagged`, or `skipped_api_error`
 - `reason`: why the market was included or excluded
+- `passed_market_filters`: whether the market passed keyword/exclusion filters
+- `selected_for_trade_fetch`: whether the market was in the final selected set after `--max-markets`
+- `trade_fetch_attempted`: whether the script actually called the trades API for this market
+- `selection_rank`: the order in which selected markets had trades fetched
 - `ticker`, `title`, `close_time`, `hours_to_close`
 - `matched_keywords` and `excluded_keywords`
 - `trade_count` for markets where trades were fetched
@@ -159,7 +162,10 @@ Each JSONL row includes fields such as:
 Seeing weather or temperature markets in this file does not necessarily mean they were analyzed. Check `scan_status`:
 
 - `filtered_out`: the market was fetched from Kalshi but excluded before trade analysis
+- `not_analyzed_max_markets_limit`: the market passed filters but was outside `--max-markets`
 - `analyzed_not_flagged` or `analyzed_flagged`: the market passed filters and trades were analyzed
+
+Trades are fetched only when `trade_fetch_attempted` is `true`. In the intended pipeline, the code first fetches public market metadata, then filters/selects markets, then fetches trades only for selected markets.
 
 The `--exclude-natural-events` list includes weather terms such as `weather`, `rain`, `precipitation`, `temperature`, `temp`, `high temp`, `low temp`, `degrees`, `hurricane`, `earthquake`, and `wildfire`.
 
@@ -206,3 +212,20 @@ python3 main.py \
 - Pull 1-minute candlesticks to measure price jumps around large trades.
 - Add authenticated orderbook access to estimate visible liquidity before/after a trade.
 - Replace keyword heuristics with a small market classifier for "few decision-maker" exposure.
+
+
+## Running Example
+
+```bash
+python3 main.py \
+  --lookback-hours 24 \
+  --recent-hours 1 \
+  --close-within-hours 72 \
+  --exclude-natural-events \
+  --max-markets 200 \
+  --min-trades 3 \
+  --ratio-threshold 3 \
+  --z-threshold 2 \
+  --jsonl data/flagged_decision_markets.jsonl \
+  --checked-markets-jsonl data/checked_decision_markets.jsonl
+```
