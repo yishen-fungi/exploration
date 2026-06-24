@@ -476,6 +476,45 @@ def write_checked_markets_jsonl(records: list[dict[str, Any]], output: Path | No
     print(f"\nWrote {len(records)} checked-market records to {output}")
 
 
+def assessment_trade_records(
+    market: dict[str, Any],
+    trades: list[dict[str, Any]],
+    *,
+    selection_rank: int,
+    filter_reason: str,
+) -> list[dict[str, Any]]:
+    fetched_time = datetime.now(UTC).isoformat()
+    return [
+        {
+            "fetched_time": fetched_time,
+            "selection_rank": selection_rank,
+            "market_filter_reason": filter_reason,
+            "ticker": market.get("ticker"),
+            "title": market.get("title"),
+            "close_time": market.get("close_time"),
+            "trade_index": trade_index,
+            "trade_contracts": to_float(trade.get("count_fp")),
+            "trade_notional": round(trade_notional(trade), 4),
+            "trade_created_time": trade.get("created_time"),
+            "yes_price_dollars": trade.get("yes_price_dollars"),
+            "no_price_dollars": trade.get("no_price_dollars"),
+            "is_block_trade": trade.get("is_block_trade"),
+            "raw_trade": trade,
+        }
+        for trade_index, trade in enumerate(trades, start=1)
+    ]
+
+
+def write_assessment_trades_jsonl(records: list[dict[str, Any]], output: Path | None) -> None:
+    if not output:
+        return
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with output.open("w", encoding="utf-8") as file:
+        for record in records:
+            file.write(json.dumps(record, sort_keys=True) + "\n")
+    print(f"\nWrote {len(records)} assessment trade records to {output}")
+
+
 def print_skipped_summary(skipped_markets: list[dict[str, str]]) -> None:
     if not skipped_markets:
         return
@@ -528,6 +567,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--checked-markets-jsonl",
         type=Path,
         help="Optional path to write every fetched market and whether it was analyzed, filtered, skipped, or flagged.",
+    )
+    parser.add_argument(
+        "--assessment-trades-jsonl",
+        type=Path,
+        help="Optional path to write raw trade records used for market assessment.",
     )
     return parser
 
@@ -596,6 +640,7 @@ def main() -> int:
 
     rows = []
     skipped_markets = []
+    assessment_trades = []
     for index, (market, filter_reason) in enumerate(markets_to_analyze, start=1):
         ticker = str(market["ticker"])
         print(f"\rAnalyzing {index}/{len(markets_to_analyze)} markets...", end="", file=sys.stderr)
@@ -619,6 +664,14 @@ def main() -> int:
             print(f"\nSkipping {ticker} after retry failure: {exc}", file=sys.stderr)
             continue
 
+        assessment_trades.extend(
+            assessment_trade_records(
+                market,
+                trades,
+                selection_rank=index,
+                filter_reason=filter_reason,
+            )
+        )
         row = analyze_market(market, trades, config)
         checked_market_records.append(
             market_audit_record(
@@ -643,6 +696,7 @@ def main() -> int:
     print_table(rows, args.limit)
     write_jsonl(rows, args.jsonl)
     write_checked_markets_jsonl(checked_market_records, args.checked_markets_jsonl)
+    write_assessment_trades_jsonl(assessment_trades, args.assessment_trades_jsonl)
     print_skipped_summary(skipped_markets)
     return 0
 

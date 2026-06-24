@@ -42,6 +42,12 @@ Write a record of every fetched market and what happened to it:
 python3 main.py --checked-markets-jsonl data/checked_markets.jsonl
 ```
 
+Write the raw trade records used for assessment:
+
+```bash
+python3 main.py --assessment-trades-jsonl data/assessment_trades.jsonl
+```
+
 Scan all near-closing markets instead of applying the decision-maker keyword filter:
 
 ```bash
@@ -103,7 +109,8 @@ python3 main.py \
   --ratio-threshold 3 \
   --z-threshold 2 \
   --jsonl data/kalshi_unusual_last_1h.jsonl \
-  --checked-markets-jsonl data/kalshi_checked_last_1h.jsonl
+  --checked-markets-jsonl data/kalshi_checked_last_1h.jsonl \
+  --assessment-trades-jsonl data/kalshi_assessment_trades_last_1h.jsonl
 ```
 
 Save the full flagged rows:
@@ -131,6 +138,7 @@ Useful options:
 - `--z-threshold 2`: flag statistically large trades with a lower exploratory bar
 - `--jsonl data/flagged.jsonl`: save only markets that were flagged as unusual
 - `--checked-markets-jsonl data/checked.jsonl`: save every fetched market with its scan status
+- `--assessment-trades-jsonl data/trades.jsonl`: save the raw trade records used for assessment
 
 ## Checked Market Records
 
@@ -168,6 +176,22 @@ Seeing weather or temperature markets in this file does not necessarily mean the
 Trades are fetched only when `trade_fetch_attempted` is `true`. In the intended pipeline, the code first fetches public market metadata, then filters/selects markets, then fetches trades only for selected markets.
 
 The `--exclude-natural-events` list includes weather terms such as `weather`, `rain`, `precipitation`, `temperature`, `temp`, `high temp`, `low temp`, `degrees`, `hurricane`, `earthquake`, and `wildfire`.
+
+## Assessment Trade Records
+
+Use `--assessment-trades-jsonl` when you want to inspect the exact trades behind the calculations:
+
+```bash
+python3 main.py \
+  --lookback-hours 24 \
+  --recent-hours 1 \
+  --exclude-natural-events \
+  --jsonl data/flagged.jsonl \
+  --checked-markets-jsonl data/checked_markets.jsonl \
+  --assessment-trades-jsonl data/assessment_trades.jsonl
+```
+
+This file contains one row per trade fetched for selected markets. Each row includes market context, derived fields such as `trade_contracts` and `trade_notional`, and `raw_trade`, which is the original Kalshi trade payload used by the scanner.
 
 ## Rate Limits And Retries
 
@@ -227,5 +251,6 @@ python3 main.py \
   --ratio-threshold 3 \
   --z-threshold 2 \
   --jsonl data/flagged_decision_markets.jsonl \
-  --checked-markets-jsonl data/checked_decision_markets.jsonl
+  --checked-markets-jsonl data/checked_decision_markets.jsonl \
+  --assessment-trades-jsonl data/assessment_trades_decision_markets.jsonl
 ```
