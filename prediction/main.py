@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 import sys
 import time
 from collections.abc import Iterable
@@ -207,18 +208,27 @@ def market_text(market: dict[str, Any]) -> str:
 
 def keyword_matches(market: dict[str, Any], keywords: tuple[str, ...]) -> list[str]:
     text = market_text(market)
-    return sorted({keyword for keyword in keywords if keyword.lower() in text})
+    matches = set()
+    for keyword in keywords:
+        pattern = re.escape(keyword.lower()).replace(r"\ ", r"\s+")
+        if re.search(rf"(?<![a-z0-9]){pattern}(?![a-z0-9])", text):
+            matches.add(keyword)
+    return sorted(matches)
 
 
-def market_passes_filters(market: dict[str, Any], config: ScanConfig) -> bool:
-    if keyword_matches(market, config.exclude_keywords):
-        return False
-    return config.include_all_markets or bool(keyword_matches(market, config.keywords))
+def market_filter_decision(market: dict[str, Any], config: ScanConfig) -> tuple[bool, str]:
+    if excluded_keywords := keyword_matches(market, config.exclude_keywords):
+        return False, f"excluded_keyword:{','.join(excluded_keywords)}"
+    if config.include_all_markets:
+        return True, "included_all_markets"
+    if matched_keywords := keyword_matches(market, config.keywords):
+        return True, f"matched_keyword:{','.join(matched_keywords)}"
+    return False, "no_required_keyword_match"
 
 
-def fetch_candidate_markets(config: ScanConfig) -> list[dict[str, Any]]:
+def fetch_open_markets(config: ScanConfig) -> list[dict[str, Any]]:
     now = datetime.now(UTC)
-    markets = list(
+    return list(
         paginate(
             "/markets",
             "markets",
@@ -234,9 +244,14 @@ def fetch_candidate_markets(config: ScanConfig) -> list[dict[str, Any]]:
         )
     )
 
-    markets = [market for market in markets if market_passes_filters(market, config)]
 
-    return sorted(markets, key=lambda market: parse_time(market.get("close_time")) or datetime.max.replace(tzinfo=UTC))[
+def sort_markets_by_close(markets: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(markets, key=lambda market: parse_time(market.get("close_time")) or datetime.max.replace(tzinfo=UTC))
+
+
+def fetch_candidate_markets(config: ScanConfig) -> list[dict[str, Any]]:
+    markets = [market for market in fetch_open_markets(config) if market_filter_decision(market, config)[0]]
+    return sort_markets_by_close(markets)[
         : config.max_markets
     ]
 
@@ -398,6 +413,51 @@ def write_jsonl(rows: list[dict[str, Any]], output: Path | None) -> None:
     print(f"\nWrote {len(rows)} flagged rows to {output}")
 
 
+def market_audit_record(
+    market: dict[str, Any],
+    config: ScanConfig,
+    *,
+    scan_status: str,
+    reason: str,
+    trade_count: int | None = None,
+    flagged: bool = False,
+    error: str | None = None,
+) -> dict[str, Any]:
+    close_time = parse_time(market.get("close_time"))
+    now = datetime.now(UTC)
+    hours_to_close = None
+    if close_time:
+        hours_to_close = max(0.0, (close_time - now).total_seconds() / 3600)
+
+    return {
+        "recorded_time": now.isoformat(),
+        "scan_status": scan_status,
+        "reason": reason,
+        "ticker": market.get("ticker"),
+        "title": market.get("title"),
+        "close_time": market.get("close_time"),
+        "hours_to_close": round(hours_to_close, 2) if hours_to_close is not None else None,
+        "matched_keywords": keyword_matches(market, config.keywords),
+        "excluded_keywords": keyword_matches(market, config.exclude_keywords),
+        "trade_count": trade_count,
+        "flagged": flagged,
+        "error": error,
+        "last_price_dollars": market.get("last_price_dollars"),
+        "volume_24h_fp": market.get("volume_24h_fp"),
+        "open_interest_fp": market.get("open_interest_fp"),
+    }
+
+
+def write_checked_markets_jsonl(records: list[dict[str, Any]], output: Path | None) -> None:
+    if not output:
+        return
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with output.open("w", encoding="utf-8") as file:
+        for record in records:
+            file.write(json.dumps(record, sort_keys=True) + "\n")
+    print(f"\nWrote {len(records)} checked-market records to {output}")
+
+
 def print_skipped_summary(skipped_markets: list[dict[str, str]]) -> None:
     if not skipped_markets:
         return
@@ -446,6 +506,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--exclude-natural-events", action="store_true")
     parser.add_argument("--jsonl", type=Path, help="Optional path to write full flagged rows as JSONL.")
+    parser.add_argument(
+        "--checked-markets-jsonl",
+        type=Path,
+        help="Optional path to write every fetched market and whether it was analyzed, filtered, skipped, or flagged.",
+    )
     return parser
 
 
@@ -473,24 +538,71 @@ def main() -> int:
     )
 
     try:
-        markets = fetch_candidate_markets(config)
+        fetched_markets = sort_markets_by_close(fetch_open_markets(config))
     except KalshiAPIError as exc:
         print(exc, file=sys.stderr)
         return 1
 
+    checked_market_records = []
+    passed_markets = []
+    for market in fetched_markets:
+        included, reason = market_filter_decision(market, config)
+        if included:
+            passed_markets.append((market, reason))
+        else:
+            checked_market_records.append(
+                market_audit_record(
+                    market,
+                    config,
+                    scan_status="filtered_out",
+                    reason=reason,
+                )
+            )
+
+    markets_to_analyze = passed_markets[: config.max_markets]
+    for market, reason in passed_markets[config.max_markets :]:
+        checked_market_records.append(
+            market_audit_record(
+                market,
+                config,
+                scan_status="not_analyzed_max_markets_limit",
+                reason=reason,
+            )
+        )
+
     rows = []
     skipped_markets = []
-    for index, market in enumerate(markets, start=1):
+    for index, (market, filter_reason) in enumerate(markets_to_analyze, start=1):
         ticker = str(market["ticker"])
-        print(f"\rAnalyzing {index}/{len(markets)} markets...", end="", file=sys.stderr)
+        print(f"\rAnalyzing {index}/{len(markets_to_analyze)} markets...", end="", file=sys.stderr)
         try:
             trades = fetch_trades(str(market["ticker"]), config)
         except KalshiAPIError as exc:
             skipped_markets.append({"ticker": ticker, "reason": str(exc)})
+            checked_market_records.append(
+                market_audit_record(
+                    market,
+                    config,
+                    scan_status="skipped_api_error",
+                    reason=filter_reason,
+                    error=str(exc),
+                )
+            )
             print(f"\nSkipping {ticker} after retry failure: {exc}", file=sys.stderr)
             continue
 
-        if row := analyze_market(market, trades, config):
+        row = analyze_market(market, trades, config)
+        checked_market_records.append(
+            market_audit_record(
+                market,
+                config,
+                scan_status="analyzed_flagged" if row else "analyzed_not_flagged",
+                reason=filter_reason,
+                trade_count=len(trades),
+                flagged=bool(row),
+            )
+        )
+        if row:
             rows.append(row)
         time.sleep(0.1)
     print("\r", end="", file=sys.stderr)
@@ -498,6 +610,7 @@ def main() -> int:
     rows.sort(key=lambda row: row["score"], reverse=True)
     print_table(rows, args.limit)
     write_jsonl(rows, args.jsonl)
+    write_checked_markets_jsonl(checked_market_records, args.checked_markets_jsonl)
     print_skipped_summary(skipped_markets)
     return 0
 

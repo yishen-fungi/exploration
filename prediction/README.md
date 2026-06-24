@@ -36,6 +36,12 @@ Write full flagged rows as JSONL:
 python3 main.py --jsonl data/flagged_markets.jsonl
 ```
 
+Write a record of every fetched market and what happened to it:
+
+```bash
+python3 main.py --checked-markets-jsonl data/checked_markets.jsonl
+```
+
 Scan all near-closing markets instead of applying the decision-maker keyword filter:
 
 ```bash
@@ -96,7 +102,9 @@ python3 main.py \
   --min-trades 3 \
   --ratio-threshold 3 \
   --z-threshold 2 \
-  --jsonl data/kalshi_unusual_last_1h.jsonl
+  --jsonl data/kalshi_unusual_last_1h.jsonl \
+  --checked-markets-jsonl data/kalshi_checked_last_1h.jsonl \
+  --checked-markets-jsonl data/checked_markets.jsonl
 ```
 
 Save the full flagged rows:
@@ -122,6 +130,31 @@ Useful options:
 - `--min-trades 3`: include low-activity markets with at least 3 trades
 - `--ratio-threshold 3`: flag markets where the largest trade is at least 3x the average trade size
 - `--z-threshold 2`: flag statistically large trades with a lower exploratory bar
+- `--jsonl data/flagged.jsonl`: save only markets that were flagged as unusual
+- `--checked-markets-jsonl data/checked.jsonl`: save every fetched market with its scan status
+
+## Checked Market Records
+
+Use `--checked-markets-jsonl` when you want an audit trail of what the script considered:
+
+```bash
+python3 main.py \
+  --lookback-hours 24 \
+  --recent-hours 1 \
+  --include-all-markets \
+  --exclude-natural-events \
+  --jsonl data/flagged.jsonl \
+  --checked-markets-jsonl data/checked_markets.jsonl
+```
+
+Each JSONL row includes fields such as:
+
+- `scan_status`: `filtered_out`, `not_analyzed_max_markets_limit`, `analyzed_not_flagged`, `analyzed_flagged`, or `skipped_api_error`
+- `reason`: why the market was included or excluded
+- `ticker`, `title`, `close_time`, `hours_to_close`
+- `matched_keywords` and `excluded_keywords`
+- `trade_count` for markets where trades were fetched
+- `flagged`: whether the market appeared in the anomaly output
 
 ## Rate Limits And Retries
 
