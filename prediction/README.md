@@ -48,6 +48,18 @@ Add custom keywords:
 python3 main.py --keyword "white house" --keyword "board vote"
 ```
 
+Exclude markets by keyword:
+
+```bash
+python3 main.py --include-all-markets --exclude-keyword weather --exclude-keyword hurricane
+```
+
+Exclude common natural-event and weather markets:
+
+```bash
+python3 main.py --include-all-markets --exclude-natural-events
+```
+
 Use stricter anomaly thresholds:
 
 ```bash
@@ -80,6 +92,7 @@ python3 main.py \
   --recent-hours 1 \
   --close-within-hours 72 \
   --include-all-markets \
+  --exclude-natural-events \
   --min-trades 3 \
   --ratio-threshold 3 \
   --z-threshold 2 \
@@ -103,6 +116,9 @@ Useful options:
 - `--recent-hours 1`: treat the past hour as the "recent activity" window
 - `--close-within-hours 24`: only scan open markets closing in the next 24 hours
 - `--include-all-markets`: scan every near-closing market instead of only keyword-matched decision-maker markets
+- `--keyword "white house"`: include only markets whose text matches this keyword, unless `--include-all-markets` is set
+- `--exclude-keyword weather`: remove markets whose text matches this keyword
+- `--exclude-natural-events`: remove common weather and natural-event markets
 - `--min-trades 3`: include low-activity markets with at least 3 trades
 - `--ratio-threshold 3`: flag markets where the largest trade is at least 3x the average trade size
 - `--z-threshold 2`: flag statistically large trades with a lower exploratory bar

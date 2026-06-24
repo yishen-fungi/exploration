@@ -52,6 +52,32 @@ DEFAULT_DECISION_KEYWORDS = (
     "veto",
 )
 
+DEFAULT_NATURAL_EVENT_KEYWORDS = (
+    "air quality",
+    "avalanche",
+    "blizzard",
+    "cyclone",
+    "drought",
+    "earthquake",
+    "flood",
+    "hail",
+    "heat",
+    "hurricane",
+    "landfall",
+    "natural disaster",
+    "precipitation",
+    "rain",
+    "snow",
+    "storm",
+    "temperature",
+    "tornado",
+    "tropical storm",
+    "tsunami",
+    "volcano",
+    "weather",
+    "wildfire",
+)
+
 
 @dataclass(frozen=True)
 class ScanConfig:
@@ -64,6 +90,7 @@ class ScanConfig:
     z_threshold: float
     ratio_threshold: float
     keywords: tuple[str, ...]
+    exclude_keywords: tuple[str, ...]
     include_all_markets: bool
     max_retries: int
     retry_base_seconds: float
@@ -183,6 +210,12 @@ def keyword_matches(market: dict[str, Any], keywords: tuple[str, ...]) -> list[s
     return sorted({keyword for keyword in keywords if keyword.lower() in text})
 
 
+def market_passes_filters(market: dict[str, Any], config: ScanConfig) -> bool:
+    if keyword_matches(market, config.exclude_keywords):
+        return False
+    return config.include_all_markets or bool(keyword_matches(market, config.keywords))
+
+
 def fetch_candidate_markets(config: ScanConfig) -> list[dict[str, Any]]:
     now = datetime.now(UTC)
     markets = list(
@@ -201,12 +234,7 @@ def fetch_candidate_markets(config: ScanConfig) -> list[dict[str, Any]]:
         )
     )
 
-    if not config.include_all_markets:
-        markets = [
-            market
-            for market in markets
-            if keyword_matches(market, config.keywords)
-        ]
+    markets = [market for market in markets if market_passes_filters(market, config)]
 
     return sorted(markets, key=lambda market: parse_time(market.get("close_time")) or datetime.max.replace(tzinfo=UTC))[
         : config.max_markets
@@ -408,14 +436,25 @@ def build_parser() -> argparse.ArgumentParser:
         "--keyword",
         action="append",
         default=[],
-        help="Add a decision-maker keyword. Can be supplied multiple times.",
+        help="Require this keyword when not using --include-all-markets. Can be supplied multiple times.",
     )
+    parser.add_argument(
+        "--exclude-keyword",
+        action="append",
+        default=[],
+        help="Exclude markets containing this keyword. Can be supplied multiple times.",
+    )
+    parser.add_argument("--exclude-natural-events", action="store_true")
     parser.add_argument("--jsonl", type=Path, help="Optional path to write full flagged rows as JSONL.")
     return parser
 
 
 def main() -> int:
     args = build_parser().parse_args()
+    exclude_keywords = tuple(args.exclude_keyword)
+    if args.exclude_natural_events:
+        exclude_keywords = tuple(sorted(set(exclude_keywords + DEFAULT_NATURAL_EVENT_KEYWORDS)))
+
     config = ScanConfig(
         close_within_hours=args.close_within_hours,
         lookback_hours=args.lookback_hours,
@@ -426,6 +465,7 @@ def main() -> int:
         z_threshold=args.z_threshold,
         ratio_threshold=args.ratio_threshold,
         keywords=tuple(sorted(set(DEFAULT_DECISION_KEYWORDS + tuple(args.keyword)))),
+        exclude_keywords=exclude_keywords,
         include_all_markets=args.include_all_markets,
         max_retries=args.max_retries,
         retry_base_seconds=args.retry_base_seconds,
