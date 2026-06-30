@@ -252,5 +252,5 @@ python3 main.py \
   --z-threshold 2 \
   --jsonl data/flagged_decision_markets.jsonl \
   --checked-markets-jsonl data/checked_decision_markets.jsonl \
-  --assessment-trades-jsonl data/assessment_trades_decision_markets.jsonl
+  --assessment-trades-jsonl data/assess_decision_markets.jsonl
 ```
